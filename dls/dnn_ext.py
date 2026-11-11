@@ -2,7 +2,7 @@ import numpy as np
 from numpy import ndarray
 from scipy import special
 
-from dls.dnn import Loss
+from dls.dnn import SGD, Loss, Operation
 
 
 def softmax(x: np.ndarray, axis=None) -> np.ndarray:
@@ -31,7 +31,7 @@ class SoftmaxCrossEntropyLoss(Loss):
         self.softmax_preds: ndarray
 
     def do_input_grad(self) -> ndarray:
-        return self.softmax_preds - self.target
+        return (self.softmax_preds - self.target) / self.softmax_preds.shape[0]
 
     def do_output(self) -> float:
         # applying the softmax function to each row (observation)
@@ -42,4 +42,44 @@ class SoftmaxCrossEntropyLoss(Loss):
         softmax_cross_entropy_loss = -1.0 * self.target * np.log(self.softmax_preds) - (
             1.0 - self.target
         ) * np.log(1 - self.softmax_preds)
-        return np.sum(softmax_cross_entropy_loss)
+        return np.sum(softmax_cross_entropy_loss) / self.softmax_preds.shape[0]
+
+
+class Tanh(Operation):
+    def do_output(self) -> ndarray:
+        return np.tanh(self.inputs)
+
+    def do_input_grad(self, output_grad: ndarray) -> ndarray:
+        return output_grad * (1 - np.square(self.output))
+
+
+class SGDMomentum(SGD):
+    def __init__(
+        self,
+        *args,
+        momentum: float = 0.9,
+        **kwargs,
+    ):
+        """
+        SGD with momentum
+
+        :param momentum: momentum
+        :param final_lr: final learning rate
+        :param decay_type: decay type
+        """
+        super().__init__(*args, **kwargs)
+        self.momentum = momentum
+        self.velocities: list[ndarray]
+        self.first = True
+
+    def step_(self):
+        if self.first:
+            self.velocities = [np.zeros_like(param) for param in self.net.params()]
+            self.first = False
+
+        for param, param_grad, velocity in zip(
+            self.net.params(), self.net.param_grads(), self.velocities
+        ):
+            velocity *= self.momentum
+            velocity += self.learning_rate * param_grad
+            param -= velocity

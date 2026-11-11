@@ -104,12 +104,47 @@ class Loss:
 
 
 class Optimizer:
-    """
-    Base class for optimizers.
-    """
+    def __init__(
+        self,
+        learning_rate: float = 0.01,
+        final_lr: float = 0,
+        decay_type: str | None = None,
+    ):
+        """
+        Base class for optimizers.
 
-    def __init__(self, learning_rate: float = 0.01):
+        :param learning_rate: learning rate
+        :param final_lr: final learning rate
+        :param decay_type: decay type
+        """
         self.learning_rate = learning_rate
+        self.final_lr = final_lr
+        self.decay_type = decay_type
+        self.decay_per_epoch: float
+
+    def setup_decay(self, max_epoch: int):
+        if self.decay_type is None:
+            return
+        if self.decay_type == "exponential":
+            self.decay_per_epoch = np.power(
+                self.final_lr / self.learning_rate, 1.0 / (max_epoch - 1)
+            )
+            return
+        if self.decay_type == "linear":
+            self.decay_per_epoch = (self.learning_rate - self.final_lr) / (
+                max_epoch - 1
+            )
+
+    def decay_learning_rate(self):
+        if self.decay_type is None:
+            return
+        if self.final_lr <= 0.0:
+            return
+        if self.decay_type == "exponential":
+            self.learning_rate *= self.decay_per_epoch
+            return
+        if self.decay_type == "linear":
+            self.learning_rate -= self.decay_per_epoch
 
     def step_(self):
         pass
@@ -231,19 +266,42 @@ class Dense(Layer):
     Fully connected layer.
     """
 
-    def __init__(self, neurons: int, activation: Operation | None = None):
+    def __init__(
+        self,
+        neurons: int,
+        activation: Operation | None = None,
+        weight_init: str = "standard",
+    ):
         super().__init__(neurons)
         self.activation = activation or Sigmoid()
+        self.weight_init = weight_init
         self.seed: int
 
     def do_setup_layer(self, inputs: ndarray):
         if self.seed:
             np.random.seed(self.seed)
+        num_in = inputs.shape[1]
+
+        if self.weight_init == "glorot":
+            scale = np.sqrt(
+                2 / (num_in + self.neurons)
+            )  # self.neurons is same as num_out
+        else:
+            scale = 1.0
         self.params = []
         # weights
-        self.params.append(np.random.randn(inputs.shape[1], self.neurons))
+        self.params.append(
+            np.random.normal(
+                loc=0.0,
+                scale=scale,
+                size=(num_in, self.neurons),
+            )
+        )
         # bias
-        self.params.append(np.random.randn(1, self.neurons))
+        self.params.append(
+            np.random.normal(loc=0.0, scale=scale, size=(1, self.neurons))
+        )
+
         self.operations = [
             WeightMultiply(params=self.params[0]),
             BiasAdd(params=self.params[1]),
@@ -252,7 +310,15 @@ class Dense(Layer):
 
 
 class MeanSquaredError(Loss):
+    def __init__(self, normalize: bool = False):
+        super().__init__()
+        self.normalize = normalize
+
     def do_output(self) -> float:
+        if self.normalize:
+            self.prediction = self.prediction / self.prediction.sum(
+                axis=1, keepdims=True
+            )
         loss = (
             np.sum(np.square(self.prediction - self.target)) / self.prediction.shape[0]
         )
@@ -317,9 +383,8 @@ class NetworkAwareOptimizer(Protocol):
 
 
 class SGD(Optimizer):
-    """Stochastic Gradient Descent optimizer."""
-
     def __init__(self, *args, **kwargs):
+        """Stochastic Gradient Descent optimizer."""
         super().__init__(*args, **kwargs)
         self._net: NeuralNetwork
 
@@ -348,6 +413,7 @@ class Trainer:
         self.optim = optim
         self.init_net(net)
         self.best_loss = 1e9
+        self.net: NeuralNetwork
 
     def init_net(self, net: NeuralNetwork):
         self.net = net
@@ -372,38 +438,50 @@ class Trainer:
         batch_size: int = 32,
         seed: int = 1,
         restart: bool = True,
+        early_stopping: bool = True,
     ):
         """
         Fits the neural network on the training data for a certain number of
         epochs. Every "eval_every" epochs, it evaluates the neural network on
         the testing data.
         """
+        # setup learning rate decay
+        self.optim.setup_decay(max_epoch=epochs)
+
         np.random.seed(seed)
         if restart:
             for layer in self.net.layers:
                 layer.first = True
+            self.best_loss = 1e9
         last_model: NeuralNetwork | None = None
         for epoch in range(epochs):
             if (epoch + 1) % eval_every == 0:
                 last_model = deepcopy(self.net)
             X_train, y_train = permute_data(X_train, y_train)
+            # generate batches to train the network
             batch_generator = self.generate_batch(X_train, y_train, batch_size)
             for ii, (X_batch, y_batch) in enumerate(batch_generator):
                 self.net.train_batch(X_batch, y_batch)
                 self.optim.step_()
+            # evaluate the loss every epoch interval
             if (epoch + 1) % eval_every == 0:
                 test_preds = self.net.forward(X_test)
                 loss = self.net.loss.forward(prediction=test_preds, target=y_test)
-                if loss < self.best_loss:
-                    print(f"Epoch {epoch + 1}: loss = {loss:.3f}")
-                    self.best_loss = loss
-                else:
-                    print(
-                        f"""Loss increased after epoch {epoch + 1}, final loss was {self.best_loss:.3f}, using the model from epoch {epoch + 1 - eval_every}"""
-                    )
-                    assert last_model is not None
+                if early_stopping:
+                    if loss < self.best_loss:
+                        print(f"Epoch {epoch + 1}: loss = {loss:.3f}")
+                        self.best_loss = loss
+                    else:
+                        print(
+                            f"""Loss increased after epoch {epoch + 1}, final loss was {self.best_loss:.3f}, using the model from epoch {epoch + 1 - eval_every}"""
+                        )
+                        assert last_model is not None
                     self.init_net(last_model)
                     break
+                else:
+                    print(f"Validation loss after {epoch + 1} epochs is {loss:.3f}")
+            # decay learning rate every epoch
+            self.optim.decay_learning_rate()
 
 
 def eval_regression_model(model: NeuralNetwork, X_test: ndarray, y_test: ndarray):

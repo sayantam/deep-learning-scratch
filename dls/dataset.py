@@ -1,3 +1,5 @@
+import os
+import pickle
 from types import SimpleNamespace
 
 from numpy import ndarray
@@ -63,3 +65,39 @@ def boston_train_test_split():
     target = boston.target
     features = boston.feature_names
     return prep_data(data, target, features)
+
+
+MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def mnist_train_test_split():
+
+    def to_namespace(mnist):
+        data = mnist.data
+        target = mnist.target.astype("int64")
+        X_train, X_test = data[:60_000], data[60_000:]
+        y_train, y_test = target[:60_000], target[60_000:]
+        return SimpleNamespace(
+            X_train=X_train,
+            X_test=X_test,
+            y_train=y_train,
+            y_test=y_test,
+        )
+
+    def download():
+        from sklearn.datasets import fetch_openml
+
+        mnist = fetch_openml(
+            "mnist_784", version=1, as_frame=False, parser="liac-arff"
+        )
+        with open(pkl_path, "wb") as f:
+            pickle.dump(mnist, f)
+        return to_namespace(mnist)
+
+    pkl_path = os.path.join(MODULE_DIR, "mnist.pkl")
+    # check if the pkl file exists
+    if os.path.exists(pkl_path):
+        with open(pkl_path, "rb") as f:
+            mnist = pickle.load(f)
+            return to_namespace(mnist)
+    return download()
