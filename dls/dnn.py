@@ -1,11 +1,16 @@
 from copy import deepcopy
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 import numpy as np
 from numpy import ndarray
 
 from dls.foundations import permute_data
 from dls.model_error import mae, rmse
+
+
+@runtime_checkable
+class OperationWithDropout(Protocol):
+    def do_output_with_inference(self, inference: bool = False) -> ndarray: ...
 
 
 class Operation:
@@ -21,9 +26,12 @@ class Operation:
         self.output = None
         self.input_grad = None
 
-    def forward(self, inputs: ndarray):
+    def forward(self, inputs: ndarray, inference: bool = False):
         self.inputs = inputs
-        self.output = self.do_output()
+        if isinstance(self, OperationWithDropout):
+            self.output = self.do_output_with_inference(inference)
+        else:
+            self.output = self.do_output()
         return self.output
 
     def backward(self, output_grad: ndarray) -> ndarray:
@@ -105,10 +113,10 @@ class Loss:
 
 class Optimizer:
     def __init__(
-        self,
-        learning_rate: float = 0.01,
-        final_lr: float = 0,
-        decay_type: str | None = None,
+            self,
+            learning_rate: float = 0.01,
+            final_lr: float = 0,
+            decay_type: str | None = None,
     ):
         """
         Base class for optimizers.
@@ -132,7 +140,7 @@ class Optimizer:
             return
         if self.decay_type == "linear":
             self.decay_per_epoch = (self.learning_rate - self.final_lr) / (
-                max_epoch - 1
+                    max_epoch - 1
             )
 
     def decay_learning_rate(self):
@@ -229,14 +237,14 @@ class Layer:
     def do_setup_layer(self, inputs: ndarray):
         raise NotImplementedError("do_setup_layer must be implemented by subclasses.")
 
-    def forward(self, inputs: ndarray):
+    def forward(self, inputs: ndarray, inference: bool = False):
         if self.first:
             self.do_setup_layer(inputs)
             self.first = False
         self.inputs = inputs
         self.output = inputs
         for operation in self.operations:
-            self.output = operation.forward(self.output)
+            self.output = operation.forward(self.output, inference=inference)
         return self.output
 
     def backward(self, output_grad: ndarray) -> ndarray:
@@ -267,14 +275,16 @@ class Dense(Layer):
     """
 
     def __init__(
-        self,
-        neurons: int,
-        activation: Operation | None = None,
-        weight_init: str = "standard",
+            self,
+            neurons: int,
+            activation: Operation | None = None,
+            weight_init: str = "standard",
+            dropout: float = 1.0,
     ):
         super().__init__(neurons)
         self.activation = activation or Sigmoid()
         self.weight_init = weight_init
+        self.dropout = dropout
         self.seed: int
 
     def do_setup_layer(self, inputs: ndarray):
@@ -308,6 +318,9 @@ class Dense(Layer):
             self.activation,
         ]
 
+        if self.dropout < 1.0:
+            self.operations.append(Dropout(keep_prob=self.dropout))
+
 
 class MeanSquaredError(Loss):
     def __init__(self, normalize: bool = False):
@@ -320,7 +333,7 @@ class MeanSquaredError(Loss):
                 axis=1, keepdims=True
             )
         loss = (
-            np.sum(np.square(self.prediction - self.target)) / self.prediction.shape[0]
+                np.sum(np.square(self.prediction - self.target)) / self.prediction.shape[0]
         )
         return loss
 
@@ -330,11 +343,11 @@ class MeanSquaredError(Loss):
 
 class NeuralNetwork:
     def __init__(
-        self,
-        layers: list[Layer],
-        loss: Loss,
-        learning_rate: float = 0.01,
-        seed: int = 1,
+            self,
+            layers: list[Layer],
+            loss: Loss,
+            learning_rate: float = 0.01,
+            seed: int = 1,
     ):
         self.layers = layers
         self.loss = loss
@@ -343,10 +356,10 @@ class NeuralNetwork:
             for layer in self.layers:
                 layer.seed = self.seed
 
-    def forward(self, x_batch: ndarray) -> ndarray:
+    def forward(self, x_batch: ndarray, inference: bool = False) -> ndarray:
         x_out = x_batch
         for layer in self.layers:
-            x_out = layer.forward(x_out)
+            x_out = layer.forward(x_out, inference=inference)
         return x_out
 
     def backward(self, loss_grad: ndarray):
@@ -425,20 +438,20 @@ class Trainer:
         assert X.shape[0] == y.shape[0]
         N = X.shape[0]
         for ii in range(0, N, size):
-            yield X[ii : ii + size], y[ii : ii + size]  # X_batch, y_batch
+            yield X[ii: ii + size], y[ii: ii + size]  # X_batch, y_batch
 
     def fit(
-        self,
-        X_train: ndarray,
-        y_train: ndarray,
-        X_test: ndarray,
-        y_test: ndarray,
-        epochs: int = 100,
-        eval_every: int = 10,
-        batch_size: int = 32,
-        seed: int = 1,
-        restart: bool = True,
-        early_stopping: bool = True,
+            self,
+            X_train: ndarray,
+            y_train: ndarray,
+            X_test: ndarray,
+            y_test: ndarray,
+            epochs: int = 100,
+            eval_every: int = 10,
+            batch_size: int = 32,
+            seed: int = 1,
+            restart: bool = True,
+            early_stopping: bool = True,
     ):
         """
         Fits the neural network on the training data for a certain number of
@@ -465,7 +478,7 @@ class Trainer:
                 self.optim.step_()
             # evaluate the loss every epoch interval
             if (epoch + 1) % eval_every == 0:
-                test_preds = self.net.forward(X_test)
+                test_preds = self.net.forward(X_test, inference=True)
                 loss = self.net.loss.forward(prediction=test_preds, target=y_test)
                 if early_stopping:
                     if loss < self.best_loss:
@@ -476,12 +489,29 @@ class Trainer:
                             f"""Loss increased after epoch {epoch + 1}, final loss was {self.best_loss:.3f}, using the model from epoch {epoch + 1 - eval_every}"""
                         )
                         assert last_model is not None
-                    self.init_net(last_model)
-                    break
+                        self.init_net(last_model)
+                        break
                 else:
                     print(f"Validation loss after {epoch + 1} epochs is {loss:.3f}")
             # decay learning rate every epoch
             self.optim.decay_learning_rate()
+
+
+class Dropout(Operation):
+    def __init__(self, keep_prob: float = 0.8):
+        super().__init__()
+        self.keep_prob = keep_prob
+        self.mask = None
+
+    def do_output_with_inference(self, inference: bool = False) -> ndarray:
+        if inference:
+            return self.inputs * self.keep_prob
+        else:
+            self.mask = np.random.binomial(1, self.keep_prob, size=self.inputs.shape)
+            return self.inputs * self.mask
+
+    def do_input_grad(self, output_grad: ndarray) -> ndarray:
+        return output_grad * self.mask
 
 
 def eval_regression_model(model: NeuralNetwork, X_test: ndarray, y_test: ndarray):
