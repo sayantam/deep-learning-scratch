@@ -113,10 +113,10 @@ class Loss:
 
 class Optimizer:
     def __init__(
-            self,
-            learning_rate: float = 0.01,
-            final_lr: float = 0,
-            decay_type: str | None = None,
+        self,
+        learning_rate: float = 0.01,
+        final_lr: float = 0,
+        decay_type: str | None = None,
     ):
         """
         Base class for optimizers.
@@ -140,7 +140,7 @@ class Optimizer:
             return
         if self.decay_type == "linear":
             self.decay_per_epoch = (self.learning_rate - self.final_lr) / (
-                    max_epoch - 1
+                max_epoch - 1
             )
 
     def decay_learning_rate(self):
@@ -275,11 +275,11 @@ class Dense(Layer):
     """
 
     def __init__(
-            self,
-            neurons: int,
-            activation: Operation | None = None,
-            weight_init: str = "standard",
-            dropout: float = 1.0,
+        self,
+        neurons: int,
+        activation: Operation | None = None,
+        weight_init: str = "standard",
+        dropout: float = 1.0,
     ):
         super().__init__(neurons)
         self.activation = activation or Sigmoid()
@@ -333,7 +333,7 @@ class MeanSquaredError(Loss):
                 axis=1, keepdims=True
             )
         loss = (
-                np.sum(np.square(self.prediction - self.target)) / self.prediction.shape[0]
+            np.sum(np.square(self.prediction - self.target)) / self.prediction.shape[0]
         )
         return loss
 
@@ -343,11 +343,11 @@ class MeanSquaredError(Loss):
 
 class NeuralNetwork:
     def __init__(
-            self,
-            layers: list[Layer],
-            loss: Loss,
-            learning_rate: float = 0.01,
-            seed: int = 1,
+        self,
+        layers: list[Layer],
+        loss: Loss,
+        learning_rate: float = 0.01,
+        seed: int = 1,
     ):
         self.layers = layers
         self.loss = loss
@@ -399,7 +399,7 @@ class SGD(Optimizer):
     def __init__(self, *args, **kwargs):
         """Stochastic Gradient Descent optimizer."""
         super().__init__(*args, **kwargs)
-        self._net: NeuralNetwork
+        self._net: NeuralNetwork | None = None
 
     @property
     def net(self):
@@ -438,20 +438,21 @@ class Trainer:
         assert X.shape[0] == y.shape[0]
         N = X.shape[0]
         for ii in range(0, N, size):
-            yield X[ii: ii + size], y[ii: ii + size]  # X_batch, y_batch
+            yield X[ii : ii + size], y[ii : ii + size]  # X_batch, y_batch
 
     def fit(
-            self,
-            X_train: ndarray,
-            y_train: ndarray,
-            X_test: ndarray,
-            y_test: ndarray,
-            epochs: int = 100,
-            eval_every: int = 10,
-            batch_size: int = 32,
-            seed: int = 1,
-            restart: bool = True,
-            early_stopping: bool = True,
+        self,
+        X_train: ndarray,
+        y_train: ndarray,
+        X_test: ndarray,
+        y_test: ndarray,
+        epochs: int = 100,
+        eval_every: int = 10,
+        batch_size: int = 32,
+        seed: int = 1,
+        restart: bool = True,
+        early_stopping: bool = True,
+        conv_testing: bool = False,
     ):
         """
         Fits the neural network on the training data for a certain number of
@@ -476,6 +477,27 @@ class Trainer:
             for ii, (X_batch, y_batch) in enumerate(batch_generator):
                 self.net.train_batch(X_batch, y_batch)
                 self.optim.step_()
+                # convolution layer handling
+                if conv_testing:
+                    if ii % 10 == 0:
+                        test_preds = self.net.forward(X_batch)
+                        batch_loss = self.net.loss.forward(test_preds, y_batch)
+                        print("batch", ii, "loss", batch_loss)
+
+                    if ii % 100 == 0 and ii > 0:
+                        print(
+                            "Validation accuracy after",
+                            ii,
+                            "batches is",
+                            """{:.2f}%""".format(
+                                np.equal(
+                                    np.argmax(self.net.forward(X_test), axis=1),
+                                    np.argmax(y_test, axis=1),
+                                ).sum()
+                                * 100.0
+                                / X_test.shape[0]
+                            ),
+                        )
             # evaluate the loss every epoch interval
             if (epoch + 1) % eval_every == 0:
                 test_preds = self.net.forward(X_test, inference=True)
