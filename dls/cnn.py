@@ -11,7 +11,7 @@ class ReLU(Operation):
         return np.clip(self.inputs, 0, None)
 
     def do_input_grad(self, output_grad: ndarray) -> ndarray:
-        mask = self.output >= 0
+        mask = self.inputs > 0
         return output_grad * mask
 
 
@@ -73,6 +73,7 @@ class Conv2DOperation(ParamOperation):
         out_channels = self.params.shape[1]
         in_patches_reshape = (
             self._get_image_patches(self.inputs)
+            .transpose(1, 0, 2, 3, 4)
             .reshape(batch_size * img_size, -1)
             .transpose(1, 0)
         )
